@@ -3,14 +3,19 @@ from datetime import datetime, timezone
 
 import streamlit as st
 import psycopg
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # -----------------------------
 # Setup
 # -----------------------------
 st.set_page_config(page_title="Yogurt Study", layout="centered")
 
-# Six flavors (image can be German; labels shown here are English)
 FLAVORS = ["Vanilla", "Strawberry", "Banana", "Blueberry", "Apricot", "Coffee"]
+PLACEHOLDER = "— select —"
+OPTIONS = [PLACEHOLDER] + FLAVORS
+
+SHOW_RESULTS_TO_STUDENTS = True  # set False if you want only admin to see the chart
 
 def classify_variety(choices: list[str]) -> str:
     """Low: one flavor three times; Medium: one flavor twice; High: three different flavors."""
@@ -22,8 +27,8 @@ def get_conn():
     db_url = st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not db_url:
         raise RuntimeError("DATABASE_URL missing in Streamlit secrets or environment variables.")
-    # One connection per worker
-    return psycopg.connect(db_url, autocommit=True)
+    # Force SSL (helps with Supabase in cloud environments)
+    return psycopg.connect(db_url, autocommit=True, sslmode="require")
 
 def init_db():
     conn = get_conn()
@@ -59,27 +64,98 @@ def safe_insert(row: dict, retries: int = 6):
                 raise
             time.sleep(0.2 * (2 ** a))
 
+def fetch_counts() -> pd.DataFrame:
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT condition, variety, COUNT(*) AS n
+            FROM yogurt_variety
+            GROUP BY condition, variety
+        """)
+        rows = cur.fetchall()
+    return pd.DataFrame(rows, columns=["condition", "variety", "n"])
+
+def plot_stacked(df: pd.DataFrame):
+    order_var = ["Low", "Medium", "High"]
+    order_cond = ["sequential", "simultaneous"]
+
+    if df.empty:
+        st.info("No data yet.")
+        return
+
+    # ensure all cells exist
+    for c in order_cond:
+        for v in order_var:
+            if not ((df["condition"] == c) & (df["variety"] == v)).any():
+                df = pd.concat([df, pd.DataFrame([{"condition": c, "variety": v, "n": 0}])], ignore_index=True)
+
+    pivot = (
+        df.pivot_table(index="condition", columns="variety", values="n", aggfunc="sum")
+        .reindex(order_cond)
+        .reindex(columns=order_var)
+        .fillna(0)
+    )
+
+    totals = pivot.sum(axis=1).replace(0, 1)
+    perc = pivot.div(totals, axis=0) * 100
+
+    fig, ax = plt.subplots()
+    bottom = None
+    for v in order_var:
+        ax.bar(perc.index, perc[v], bottom=bottom, label=v)
+        bottom = perc[v] if bottom is None else bottom + perc[v]
+
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("%")
+    ax.set_title("Amount of Variety Selected for Sequential Consumption (Yogurt)")
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(["Sequential\nChoices", "Simultaneous\nChoices"])
+    ax.legend(loc="upper right")
+
+    # % labels inside segments (only if large enough)
+    cum = perc[order_var].cumsum(axis=1)
+    starts = cum.shift(axis=1, fill_value=0)
+    for i, cond in enumerate(order_cond):
+        for v in order_var:
+            val = float(perc.loc[cond, v])
+            if val >= 6:
+                y = float(starts.loc[cond, v] + val / 2)
+                ax.text(i, y, f"{val:.0f}%", ha="center", va="center", fontsize=10)
+
+    st.pyplot(fig)
+
 # -----------------------------
 # Session state
 # -----------------------------
 if "pid" not in st.session_state:
     st.session_state.pid = f"p_{random.randint(100000, 999999)}"
-
 if "condition" not in st.session_state:
-    # Random assignment on first load
     st.session_state.condition = random.choice(["sequential", "simultaneous"])
-
 if "done" not in st.session_state:
     st.session_state.done = False
 
-st.title("Purchase Quantity, Purchase Timing, and Variety-Seeking Behaviour")
+admin = st.query_params.get("admin") == "1"
 
-# Show German image strip if present in repo
+# German image strip if present
 if os.path.exists("Bild1.png"):
     st.image("Bild1.png", use_container_width=True)
 
+# Optional: admin can always see live results at top
+if admin:
+    st.markdown("### Live results")
+    plot_stacked(fetch_counts())
+    st.markdown("---")
+
+# -----------------------------
+# Done screen (optionally show chart)
+# -----------------------------
 if st.session_state.done:
     st.success("Thank you — your choices were recorded.")
+
+    if SHOW_RESULTS_TO_STUDENTS or admin:
+        with st.expander("See results so far", expanded=True):
+            plot_stacked(fetch_counts())
+
     st.stop()
 
 # -----------------------------
@@ -95,13 +171,17 @@ if st.session_state.condition == "sequential":
     st.write("**Which yogurt would you choose each week, for three weeks?**")
 
     with st.form("seq"):
-        w1 = st.selectbox("Week 1", FLAVORS, index=0)
-        w2 = st.selectbox("Week 2", FLAVORS, index=1)
-        w3 = st.selectbox("Week 3", FLAVORS, index=2)
+        w1 = st.selectbox("Week 1", OPTIONS, index=0)
+        w2 = st.selectbox("Week 2", OPTIONS, index=0)
+        w3 = st.selectbox("Week 3", OPTIONS, index=0)
         submit = st.form_submit_button("Submit")
 
         if submit:
             choices = [w1, w2, w3]
+            if PLACEHOLDER in choices:
+                st.error("Please make a selection for Week 1, Week 2, and Week 3.")
+                st.stop()
+
             safe_insert({
                 "created_at": datetime.now(timezone.utc),
                 "participant_id": st.session_state.pid,
@@ -122,14 +202,17 @@ else:
     st.write("**Which three yogurts would you choose (at the same time)?**")
 
     with st.form("sim"):
-        # Allow repeats: use three dropdowns (NOT multiselect)
-        s1 = st.selectbox("Yogurt 1", FLAVORS, index=0, key="s1")
-        s2 = st.selectbox("Yogurt 2", FLAVORS, index=1, key="s2")
-        s3 = st.selectbox("Yogurt 3", FLAVORS, index=2, key="s3")
+        s1 = st.selectbox("Yogurt 1", OPTIONS, index=0, key="s1")
+        s2 = st.selectbox("Yogurt 2", OPTIONS, index=0, key="s2")
+        s3 = st.selectbox("Yogurt 3", OPTIONS, index=0, key="s3")
         submit = st.form_submit_button("Submit")
 
         if submit:
             choices = [s1, s2, s3]
+            if PLACEHOLDER in choices:
+                st.error("Please select Yogurt 1, Yogurt 2, and Yogurt 3.")
+                st.stop()
+
             safe_insert({
                 "created_at": datetime.now(timezone.utc),
                 "participant_id": st.session_state.pid,
