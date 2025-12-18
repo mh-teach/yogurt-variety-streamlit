@@ -7,7 +7,7 @@ import psycopg
 # -----------------------------
 # Setup
 # -----------------------------
-st.set_page_config(page_title="Yogurt Variety Study", layout="centered")
+st.set_page_config(page_title="Yogurt Study", layout="centered")
 
 # Six flavors (image can be German; labels shown here are English)
 FLAVORS = ["Vanilla", "Strawberry", "Banana", "Blueberry", "Apricot", "Coffee"]
