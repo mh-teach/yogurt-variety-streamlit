@@ -90,6 +90,28 @@ def fetch_n_per_condition():
         rows = cur.fetchall()
     return {cond: n for cond, n in rows}
 
+def assign_condition_balanced():
+    """Adaptive randomization to keep cell sizes approximately equal."""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT condition, COUNT(*)
+            FROM yogurt_variety
+            GROUP BY condition
+        """)
+        rows = cur.fetchall()
+
+    counts = {c: n for c, n in rows}
+    n_seq = counts.get("sequential", 0)
+    n_sim = counts.get("simultaneous", 0)
+
+    if n_seq < n_sim:
+        return "sequential"
+    elif n_sim < n_seq:
+        return "simultaneous"
+    else:
+        return random.choice(["sequential", "simultaneous"])
+
 def plot_stacked(df):
     label_map = {
         "Low": "Low (3x same)",
@@ -139,13 +161,11 @@ def plot_stacked(df):
 
     ax.set_ylim(0, 100)
     ax.set_ylabel("%")
-
     ax.set_xticks([0, 1])
     ax.set_xticklabels([
         f"Sequential choices\n(n = {n_seq})",
         f"Simultaneous choices\n(n = {n_sim})"
     ])
-
     ax.set_title("Amount of Variety Selected")
     ax.legend(loc="upper right")
 
@@ -174,8 +194,10 @@ init_db()
 # -----------------------------
 if "pid" not in st.session_state:
     st.session_state.pid = f"p_{random.randint(100000, 999999)}"
+
 if "condition" not in st.session_state:
-    st.session_state.condition = random.choice(["sequential", "simultaneous"])
+    st.session_state.condition = assign_condition_balanced()
+
 if "done" not in st.session_state:
     st.session_state.done = False
 
