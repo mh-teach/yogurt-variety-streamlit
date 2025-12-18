@@ -104,7 +104,6 @@ def plot_stacked(df):
         st.info("No data yet.")
         return
 
-    # ensure all cells exist
     for c in order_cond:
         for v in order_var:
             if not ((df.condition == c) & (df.variety == v)).any():
@@ -122,7 +121,6 @@ def plot_stacked(df):
 
     perc = pivot.div(pivot.sum(axis=1).replace(0, 1), axis=0) * 100
 
-    # Fetch N per condition for title
     n_map = fetch_n_per_condition()
     n_seq = n_map.get("sequential", 0)
     n_sim = n_map.get("simultaneous", 0)
@@ -141,12 +139,14 @@ def plot_stacked(df):
 
     ax.set_ylim(0, 100)
     ax.set_ylabel("%")
+
     ax.set_xticks([0, 1])
-    ax.set_xticklabels(["Sequential\nChoices", "Simultaneous\nChoices"])
-    ax.set_title(
-        f"Amount of Variety Selected "
-        f"(Sequential n = {n_seq}, Simultaneous n = {n_sim})"
-    )
+    ax.set_xticklabels([
+        f"Sequential choices\n(n = {n_seq})",
+        f"Simultaneous choices\n(n = {n_sim})"
+    ])
+
+    ax.set_title("Amount of Variety Selected")
     ax.legend(loc="upper right")
 
     for i, cond in enumerate(order_cond):
